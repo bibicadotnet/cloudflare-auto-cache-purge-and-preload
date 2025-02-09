@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Cloudflare Auto Cache Purge And Preload
  * Description: Tự động xóa và preload cache cho bài viết, trang, danh mục và thẻ sử dụng Cloudflare API và Action Scheduler.
- * Version: 1.0
+ * Version: 1.1
  * Author: bibica
  * Author URI: https://bibica.net
  * Plugin URI: https://bibica.net/cloudflare-auto-cache-purge-and-preload
@@ -32,8 +32,9 @@ class Cloudflare_Auto_Cache_Purge_And_Preload {
         add_action('admin_menu', [$this, 'add_admin_menu']);
         add_action('admin_init', [$this, 'register_settings']);
 		add_action('admin_init', [$this, 'handle_reset_settings']);		
-
-        add_action('wp_after_insert_post', [$this, 'handle_save_post'], 10, 4);
+		add_filter('plugin_action_links_' . plugin_basename(__FILE__), [$this, 'add_settings_link']);
+        
+		add_action('wp_after_insert_post', [$this, 'handle_save_post'], 10, 4);
         add_action('before_delete_post', [$this, 'handle_before_delete_post']);
         add_action('edited_term', [$this, 'handle_edit_term'], 10, 3);
         add_action('delete_term', [$this, 'handle_delete_term'], 10, 4);
@@ -225,77 +226,107 @@ public function process_schedule_urls($post_id, $post_type, $update) {
         }
     }
 
+// Quá trình sử lý clear cache và preload cache tự động
 private function schedule_urls_processing($urls) {
     if (empty($urls)) return;
+
+    // Lọc các URL trùng lặp
     $unique_urls = array_unique($urls);
-    foreach (array_chunk($unique_urls, self::MAX_URLS_PER_BATCH) as $batch) {
-        as_enqueue_async_action(self::ACTION_PURGE_URLS, ['urls' => $batch]);
-    }
+
+    // Chuyển toàn bộ URL vào quá trình Clear Cache
+    as_enqueue_async_action(self::ACTION_PURGE_URLS, ['urls' => $unique_urls]);
+
+    // Chuyển toàn bộ URL vào quá trình Preload Cache
     as_enqueue_async_action(self::ACTION_PRELOAD_URLS, ['urls' => $unique_urls]);
 }
 
-    public function process_purge_urls_batch($urls) {
-        try {
-            $credentials = $this->get_api_credentials();
-            
-            if (empty($credentials['email']) || empty($credentials['api_key']) || empty($credentials['zone_id'])) {
-                throw new Exception("Thiếu thông tin xác thực Cloudflare API");
-            }
-
-            $response = wp_remote_post(
-                'https://api.cloudflare.com/client/v4/zones/' . $credentials['zone_id'] . '/purge_cache',
-                [
-                    'headers' => [
-                        'X-Auth-Email' => $credentials['email'],
-                        'X-Auth-Key' => $credentials['api_key'],
-                        'Content-Type' => 'application/json',
-                    ],
-                    'body' => json_encode(['files' => $urls]),
-                    'timeout' => 30,
-                ]
-            );
-
-            if (is_wp_error($response)) {
-                throw new Exception($response->get_error_message());
-            }
-
-            $body = json_decode(wp_remote_retrieve_body($response), true);
-            if (empty($body['success'])) {
-                throw new Exception("API Cloudflare trả về lỗi: " . json_encode($body['errors'] ?? []));
-            }
-
-            $this->log_message("Đã xóa cache thành công cho: " . implode(', ', $urls));
-        } catch (Exception $e) {
-            $this->log_message("Lỗi xóa cache: " . $e->getMessage());
-            as_enqueue_async_action(self::ACTION_PURGE_URLS, ['urls' => $urls], 'cloudflare-cache');
+public function process_purge_urls_batch($urls) {
+    try {
+        $credentials = $this->get_api_credentials();
+        if (empty($credentials['email']) || empty($credentials['api_key']) || empty($credentials['zone_id'])) {
+            throw new Exception("Thiếu thông tin xác thực Cloudflare API");
         }
+
+        $batches = array_chunk($urls, self::MAX_URLS_PER_BATCH);
+        $requests = [];
+        
+     #   $this->log_message("Bắt đầu gửi yêu cầu xóa cache cho các URL: " . implode(', ', $urls));
+
+        foreach ($batches as $batch) {
+            $requests[] = [
+                'body' => json_encode(['files' => $batch]),
+                'headers' => [
+                    'X-Auth-Email' => $credentials['email'],
+                    'X-Auth-Key' => $credentials['api_key'],
+                    'Content-Type' => 'application/json',
+                ]
+            ];
+            $this->log_message("Gửi batch xóa cache: " . implode(', ', $batch));
+        }
+        
+        // Sử dụng wp_remote_post không đồng bộ
+        $multi_handle = curl_multi_init();
+        $curl_handles = [];
+        
+        foreach ($requests as $request) {
+            $ch = curl_init('https://api.cloudflare.com/client/v4/zones/' . $credentials['zone_id'] . '/purge_cache');
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_POST, true);
+            curl_setopt($ch, CURLOPT_POSTFIELDS, $request['body']);
+            curl_setopt($ch, CURLOPT_HTTPHEADER, [
+                'X-Auth-Email: ' . $credentials['email'],
+                'X-Auth-Key: ' . $credentials['api_key'],
+                'Content-Type: application/json',
+            ]);
+            curl_multi_add_handle($multi_handle, $ch);
+            $curl_handles[] = $ch;
+        }
+        
+        do {
+            curl_multi_exec($multi_handle, $active);
+        } while ($active > 0);
+        
+        foreach ($curl_handles as $ch) {
+            $response = curl_multi_getcontent($ch);
+            curl_close($ch);
+        }
+        
+        curl_multi_close($multi_handle);
+        
+        $this->log_message("Đã gửi tất cả yêu cầu xóa cache đồng thời cho các batch");
+    } catch (Exception $e) {
+        $this->log_message("Lỗi xóa cache: " . $e->getMessage());
+        as_enqueue_async_action(self::ACTION_PURGE_URLS, ['urls' => $urls], 'cloudflare-cache');
     }
+}
+
 
 public function process_preload_urls_batch($urls) {
     try {
-        // Lấy PID của tiến trình hiện tại
         $pid = getmypid();
 
-        // Áp dụng renice để giảm tải CPU
+        // Giảm mức độ ưu tiên của tiến trình để tránh ảnh hưởng hệ thống
         if (function_exists('proc_nice')) {
-            proc_nice(19); // Đặt tiến trình ở mức ưu tiên CPU thấp nhất
+            proc_nice(19);
             $this->log_message("Đã giảm ưu tiên CPU cho PID: $pid");
-        } else {
-            $this->log_message("Không thể áp dụng proc_nice. Hàm không khả dụng.");
         }
 
-        // Áp dụng ionice để giảm tải I/O
         if (function_exists('shell_exec')) {
             shell_exec('ionice -c3 -p ' . $pid);
             $this->log_message("Đã giảm ưu tiên I/O cho PID: $pid");
-        } else {
-            $this->log_message("Không thể áp dụng ionice. shell_exec không khả dụng.");
         }
 
-        // Giới hạn số lượng request đồng thời
-        $max_concurrent_requests = 5; // Giới hạn số lượng request
-        $chunks = array_chunk($urls, $max_concurrent_requests);
+        // Xác định mức tải CPU để điều chỉnh request đồng thời
+        $load = sys_getloadavg();
+        if ($load[0] < 1.0) {
+            $max_concurrent_requests = 10;  // Tải CPU thấp, tăng số request
+        } elseif ($load[0] < 2.0) {
+            $max_concurrent_requests = 5;
+        } else {
+            $max_concurrent_requests = 2;  // Tải CPU cao, giảm số request
+        }
 
+        $chunks = array_chunk($urls, $max_concurrent_requests);
         foreach ($chunks as $chunk) {
             $this->process_preload_urls_with_curl_multi($chunk);
         }
@@ -313,19 +344,27 @@ private function process_preload_urls_with_curl_multi($urls) {
         $ch = curl_init();
         curl_setopt($ch, CURLOPT_URL, $url);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 5); // Timeout 5 giây
+        curl_setopt($ch, CURLOPT_TIMEOUT, 5);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
         curl_setopt($ch, CURLOPT_USERAGENT, 'Cache Preloader');
         curl_multi_add_handle($mh, $ch);
         $handles[$url] = $ch;
     }
 
-    $running = null;
+    // Xử lý nhiều request song song nhưng không tiêu tốn quá nhiều CPU
+    $active = null;
     do {
-        curl_multi_exec($mh, $running);
-        curl_multi_select($mh);
-    } while ($running > 0);
+        while (($status = curl_multi_exec($mh, $active)) == CURLM_CALL_MULTI_PERFORM);
+        
+        if ($status != CURLM_OK) {
+            break;
+        }
 
+        // Chờ request xử lý thay vì vòng lặp rỗng làm tốn CPU
+        curl_multi_select($mh, 0.1);
+    } while ($active);
+
+    // Xử lý kết quả trả về
     foreach ($handles as $url => $ch) {
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         if ($httpCode >= 200 && $httpCode < 300) {
@@ -340,6 +379,8 @@ private function process_preload_urls_with_curl_multi($urls) {
 
     curl_multi_close($mh);
 }
+
+
 
 private function collect_urls_for_page($post_id) {
     $urls = [];
@@ -792,6 +833,11 @@ public function update_cloudflare_preload_cron($old_value, $new_value) {
             [$this, 'render_settings_page'] // Callback hiển thị trang
         );
     }
+    public function add_settings_link($links) {
+        $settings_link = '<a href="' . admin_url('tools.php?page=cloudflare-cache-settings') . '">Settings</a>';
+        array_unshift($links, $settings_link);
+        return $links;
+    }	
 
     // Đăng ký settings
     public function register_settings() {
@@ -1158,14 +1204,22 @@ private function validate_api_credentials($email, $api_key, $zone_id) {
  */
 private function detect_sitemap_url() {
     // 1. Kiểm tra các sitemap phổ biến
-    $possible_sitemaps = [
-        '/sitemap.xml',
-        '/sitemap_index.xml', // Yoast SEO
-        '/sitemap/sitemap.xml', // Rank Math
-        '/sitemaps/sitemap.xml',
-        '/sitemap.php',
-        '/sitemap.txt',
-    ];
+$possible_sitemaps = [
+    '/sitemap.xml', // Mặc định của nhiều plugin
+    '/sitemap_index.xml', // Yoast SEO
+    '/sitemap/sitemap.xml', // Rank Math SEO
+    '/sitemaps/sitemap.xml', // Một số plugin khác
+    '/sitemap.php', // Phiên bản cũ hoặc plugin tùy chỉnh
+    '/sitemap.txt', // Phiên bản sitemap dạng văn bản
+    '/wp-sitemap.xml', // Sitemap mặc định từ WordPress 5.5+
+    '/sitemap.xml.gz', // Sitemap dạng nén (Google XML Sitemaps)
+    '/sitemap-main.xml', // All in One SEO Pack
+    '/sitemap_index.xml.gz', // Phiên bản nén của Yoast SEO
+    '/sitemap-index.xml', // SEOPress
+    '/sitemap-news.xml', // Sitemap tin tức (Yoast, Rank Math)
+    '/sitemap-video.xml', // Sitemap video (Yoast, Rank Math)
+    '/sitemap-image.xml', // Sitemap hình ảnh (Yoast, Rank Math)
+];
 
     foreach ($possible_sitemaps as $sitemap) {
         $url = home_url($sitemap);
@@ -1250,7 +1304,6 @@ private function reset_to_default_settings() {
         'updated'
     );
 }
-
 
 
 }
