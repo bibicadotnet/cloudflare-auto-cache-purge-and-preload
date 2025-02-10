@@ -3,13 +3,12 @@
 Plugin tự động xóa và preload cache Cloudflare khi có thay đổi trên WordPress.
 
 ## Tính năng
-- **Tự động xóa cache** khi bài viết, trang, danh mục, thẻ thay đổi.
+- **Tự động xóa cache** khi bài viết, trang, bình luận, danh mục, thẻ thay đổi.
 - **Preload cache sau khi xóa** để cải thiện tốc độ tải.
 - **Nút "Clear Cache" & "Preload Cache"** trên admin bar.
 - **Preload toàn bộ trang hàng ngày**.
 - **Cấu hình dễ dàng** qua giao diện web.
 - **Ghi log quá trình xóa & preload cache**.
-- **Không quản lý xóa cache khi có comment mới từ WordPress**.
 
 ## Cài đặt
 1. **Cài plugin** như WordPress plugin thông thường.
