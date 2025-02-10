@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Cloudflare Auto Cache Purge And Preload
  * Description: Tự động xóa và preload cache cho bài viết, trang, danh mục và thẻ sử dụng Cloudflare API và Action Scheduler.
- * Version: 1.1
+ * Version: 1.2
  * Author: bibica
  * Author URI: https://bibica.net
  * Plugin URI: https://bibica.net/cloudflare-auto-cache-purge-and-preload
@@ -41,6 +41,11 @@ class Cloudflare_Auto_Cache_Purge_And_Preload {
         add_action('wp_trash_post', [$this, 'handle_trash_post']);
         add_action('transition_post_status', [$this, 'handle_status_change'], 10, 3);
 		add_action('process_schedule_urls', [$this, 'process_schedule_urls'], 10, 3);
+		// Thêm hook xử lý comment
+		add_action('transition_comment_status', [$this, 'handle_comment_status_change'], 10, 3);
+		add_action('comment_post', [$this, 'handle_new_comment'], 10, 3);
+		add_action('edit_comment', [$this, 'handle_comment_edit'], 10, 2);
+		add_action('delete_comment', [$this, 'handle_comment_deletion'], 10, 2);
 
         add_action(self::ACTION_PURGE_URLS, [$this, 'process_purge_urls_batch']);
         add_action(self::ACTION_PRELOAD_URLS, [$this, 'process_preload_urls_batch']);
@@ -129,46 +134,133 @@ class Cloudflare_Auto_Cache_Purge_And_Preload {
             $this->log_message("Lỗi xử lý thay đổi trạng thái: " . $e->getMessage());
         }
     }
+	/**
+	 * Xử lý khi trạng thái comment thay đổi
+	 */
+	public function handle_comment_status_change($new_status, $old_status, $comment) {
+		try {
+			// Clear cache khi comment được chuyển sang approved từ bất kỳ trạng thái nào khác
+			if ($new_status === 'approved' && $old_status !== 'approved') {
+				$this->purge_cache_for_comment($comment);
+			}
+			// Clear cache khi comment được chuyển từ approved sang trạng thái khác
+			else if ($old_status === 'approved' && $new_status !== 'approved') {
+				$this->purge_cache_for_comment($comment);
+			}
+		} catch (Exception $e) {
+			$this->log_message("Lỗi xử lý thay đổi trạng thái comment: " . $e->getMessage());
+		}
+	}
 
-public function handle_save_post($post_id, $post, $update, $post_before) {
-   try {
-       // Chặn nếu là bản revision, autosave hoặc đang trong quá trình autosave
-       if (wp_is_post_revision($post_id) || wp_is_post_autosave($post_id) || (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE)) {
-           return;
-       }
-       // Chặn nếu bài viết đang là draft, pending hoặc auto-draft (vì chưa public, không cần xóa cache)
-       if (in_array($post->post_status, ['draft', 'pending', 'auto-draft'])) {
-           return;
-       }
-       // Chỉ xử lý nếu post_type thuộc danh sách được hỗ trợ
-       if (in_array($post->post_type, $this->supported_post_types)) {
-           // Lên lịch xử lý URL cache bất đồng bộ
-           as_enqueue_async_action('process_schedule_urls', [
-               'post_id' => $post_id, 
-               'post_type' => $post->post_type, 
-               'update' => $update
-           ]);
-       }
-   } catch (Exception $e) {
-       $this->log_message("Lỗi xử lý lưu bài viết: " . $e->getMessage());
-   }
-}
+	/**
+	 * Xử lý khi có comment mới được đăng mà không cần phê duyệt
+	 */
+	public function handle_new_comment($comment_id, $comment_approved, $commentdata) {
+		try {
+			// Chỉ xử lý khi comment được tự động phê duyệt
+			if ($comment_approved === 1) {
+				$comment = get_comment($comment_id);
+				$this->purge_cache_for_comment($comment);
+			}
+		} catch (Exception $e) {
+			$this->log_message("Lỗi xử lý comment mới: " . $e->getMessage());
+		}
+	}
+	/**
+	 * Xử lý khi comment được sửa
+	 */
+	public function handle_comment_edit($comment_id, $commentdata) {
+		try {
+			// Lấy thông tin comment
+			$comment = get_comment($comment_id);
 
-# Collect URL bất đồng bộ
-public function process_schedule_urls($post_id, $post_type, $update) {
-   try {
-       $urls = [];
-       if ($post_type === 'page') {
-           $urls = $this->collect_urls_for_page($post_id);
-       } else {
-           $urls = $this->collect_urls_for_post($post_id, $update);
-       }
-       // Lên lịch xử lý URL cache
-       $this->schedule_urls_processing($urls);
-   } catch (Exception $e) {
-       $this->log_message("Lỗi xử lý lưu bài viết: " . $e->getMessage());
-   }
-}
+			// Xóa cache liên quan đến comment
+			$this->purge_cache_for_comment($comment);
+		} catch (Exception $e) {
+			$this->log_message("Lỗi xử lý sửa comment: " . $e->getMessage());
+		}
+	}
+	/**
+	 * Xử lý khi comment bị xóa hoàn toàn
+	 */
+	public function handle_comment_deletion($comment_id, $comment) {
+		try {
+			// Chỉ clear cache nếu comment đang ở trạng thái approved
+			if ($comment->comment_approved === '1') {
+				$this->purge_cache_for_comment($comment);
+			}
+		} catch (Exception $e) {
+			$this->log_message("Lỗi xử lý xóa comment: " . $e->getMessage());
+		}
+	}
+
+	/**
+	 * Xóa cache liên quan đến comment
+	 */
+	private function purge_cache_for_comment($comment) {
+		try {
+			// Lấy post ID từ comment
+			$post_id = $comment->comment_post_ID;
+
+			// Lấy URL của bài viết
+			$post_url = get_permalink($post_id);
+
+			if ($post_url) {
+				// Xóa cache của URL bài viết
+				$this->schedule_urls_processing([$post_url]);
+
+				// Nếu có trang phân trang comment, xóa cache của các trang phân trang đó
+				$comment_pages = get_comment_pages_count($comment);
+				if ($comment_pages > 1) {
+					for ($i = 2; $i <= $comment_pages; $i++) {
+						$this->schedule_urls_processing([$post_url . 'comment-page-' . $i . '/']);
+					}
+				}
+			}
+		} catch (Exception $e) {
+			$this->log_message("Lỗi xóa cache cho comment: " . $e->getMessage());
+		}
+	}	
+
+	public function handle_save_post($post_id, $post, $update, $post_before) {
+	   try {
+		   // Chặn nếu là bản revision, autosave hoặc đang trong quá trình autosave
+		   if (wp_is_post_revision($post_id) || wp_is_post_autosave($post_id) || (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE)) {
+			   return;
+		   }
+		   // Chặn nếu bài viết đang là draft, pending hoặc auto-draft (vì chưa public, không cần xóa cache)
+		   if (in_array($post->post_status, ['draft', 'pending', 'auto-draft'])) {
+			   return;
+		   }
+		   // Chỉ xử lý nếu post_type thuộc danh sách được hỗ trợ
+		   if (in_array($post->post_type, $this->supported_post_types)) {
+			   // Lên lịch xử lý URL cache bất đồng bộ
+			   as_enqueue_async_action('process_schedule_urls', [
+				   'post_id' => $post_id, 
+				   'post_type' => $post->post_type, 
+				   'update' => $update
+			   ]);
+		   }
+	   } catch (Exception $e) {
+		   $this->log_message("Lỗi xử lý lưu bài viết: " . $e->getMessage());
+	   }
+	}
+
+	# Collect URL bất đồng bộ
+	public function process_schedule_urls($post_id, $post_type, $update) {
+	   try {
+		   $urls = [];
+		   if ($post_type === 'page') {
+			   $urls = $this->collect_urls_for_page($post_id);
+		   } else {
+			   $urls = $this->collect_urls_for_post($post_id, $update);
+		   }
+		   // Lên lịch xử lý URL cache
+		   $this->schedule_urls_processing($urls);
+	   } catch (Exception $e) {
+		   $this->log_message("Lỗi xử lý lưu bài viết: " . $e->getMessage());
+	   }
+	}
 
     public function handle_before_delete_post($post_id) {
         try {
