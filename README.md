@@ -1,4 +1,4 @@
-# Cloudflare Auto Cache Purge & Preload
+# Cloudflare Auto Cache Purge & Preload v1.2.1
 
 Plugin tự động xóa và preload cache Cloudflare khi có thay đổi trên WordPress.
 
@@ -40,9 +40,16 @@ add_filter('action_scheduler_store_logs', '__return_false');
 ```
 
 ## Hiệu suất
+Tùy chỉnh tùy thuộc vào số core CPU và tình trạng đang sử dụng 
+
+Trên VPS 4 core Oracle
 - **Preload 600 trang mới: ~42 giây**.
 - **Preload 600 trang đã có cache: ~5 giây**.
 - **Xóa & preload bài viết mới: ~10 giây**.
+
+Trên VPS 1 core cấu hình thấp nhất của UpCloud
+- **Preload 600 trang mới: ~120 giây**.
+- .........
 
 ## Lỗi & Góp ý
 Mở issue hoặc comment để được hỗ trợ.
