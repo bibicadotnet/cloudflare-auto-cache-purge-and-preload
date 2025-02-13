@@ -392,11 +392,11 @@ public function process_purge_urls_batch($urls) {
     }
 }
 
-
 public function process_preload_urls_batch($urls) {
     try {
         $pid = getmypid();
-        // Giảm mức độ ưu tiên của tiến trình
+        
+        // Giảm mức độ ưu tiên của tiến trình để tránh ảnh hưởng hệ thống
         if (function_exists('proc_nice')) {
             proc_nice(19);
             $this->log_message("Đã giảm ưu tiên CPU cho PID: $pid");
@@ -406,89 +406,26 @@ public function process_preload_urls_batch($urls) {
             $this->log_message("Đã giảm ưu tiên I/O cho PID: $pid");
         }
 
-        // Các thông số điều chỉnh
-        $concurrent_requests = 2; // Bắt đầu thấp
-        $max_concurrent = 8;
-        $min_concurrent = 2;
-        
-        // Theo dõi thời gian xử lý PHP
-        $start_batch = microtime(true);
-        $processed_count = 0;
-        $process_times = [];
-        
-        $chunks = array_chunk($urls, $concurrent_requests);
-        $total_chunks = count($chunks);
-        
-        foreach ($chunks as $index => $chunk) {
-            $chunk_start = microtime(true);
-            
-            // Xử lý chunk hiện tại
-            $this->process_preload_urls_with_curl_multi(array_slice($chunk, 0, $concurrent_requests));
-            
-            // Tính thời gian xử lý
-            $process_time = microtime(true) - $chunk_start;
-            $processed_count += count($chunk);
-            
-            // Lưu 3 kết quả gần nhất
-            array_push($process_times, $process_time);
-            if (count($process_times) > 3) {
-                array_shift($process_times);
-            }
-            
-            // Tính trung bình thời gian xử lý
-            $avg_process_time = array_sum($process_times) / count($process_times);
-            
-            // Tính tốc độ xử lý hiện tại
-            $elapsed_time = microtime(true) - $start_batch;
-            $urls_per_second = $processed_count / $elapsed_time;
-            
-            // Điều chỉnh số lượng request với ngưỡng khắt khe hơn
-            if ($avg_process_time > 0.3) { // Giảm ngưỡng xuống 0.3s
-                if ($concurrent_requests > $min_concurrent) {
-                    $concurrent_requests--;
-                    $this->log_message(sprintf(
-                        "Giảm concurrent requests xuống %d (%.1f URLs/s, Process time: %.2fs)", 
-                        $concurrent_requests,
-                        $urls_per_second,
-                        $avg_process_time
-                    ));
-                }
-                usleep(100000); // Delay 100ms khi process time cao
-            } elseif ($avg_process_time < 0.15 && $concurrent_requests < $max_concurrent) { // Chỉ tăng khi process time rất thấp
-                $concurrent_requests++;
-                $this->log_message(sprintf(
-                    "Tăng concurrent requests lên %d (%.1f URLs/s, Process time: %.2fs)",
-                    $concurrent_requests,
-                    $urls_per_second,
-                    $avg_process_time
-                ));
-            }
-            
-            // Log tiến độ mỗi 5 chunks
-            if ($index % 5 == 0) {
-                $percent_complete = ($index + 1) * 100 / $total_chunks;
-                $this->log_message(sprintf(
-                    "Tiến độ: %.1f%% (%d/%d URLs, %.1f URLs/s)", 
-                    $percent_complete,
-                    $processed_count,
-                    count($urls),
-                    $urls_per_second
-                ));
-            }
-            
-            // Delay ngắn để tránh CPU spike
-            usleep(50000); // 50ms base delay
+        // Xác định số CPU lõi của hệ thống
+        $num_cores = intval(shell_exec('nproc 2>/dev/null') ?: 1); // Mặc định là 1 nếu không lấy được
+
+        // Lấy mức tải CPU trung bình trong 1 phút
+        $load = sys_getloadavg();
+        $cpu_load = $load[0] ?? 0;
+
+        // Tính toán số lượng request đồng thời dựa trên tải CPU và số lõi CPU
+        $max_concurrent_requests = max(1, intval($num_cores * 2 - $cpu_load));
+
+        // Giới hạn số lượng request đồng thời trong khoảng hợp lý
+        $max_concurrent_requests = min(max($max_concurrent_requests, 1), 10);
+
+        $this->log_message("Số request đồng thời được tính toán: $max_concurrent_requests (CPU Load: $cpu_load, Cores: $num_cores)");
+
+        // Chia nhỏ danh sách URL thành các chunk
+        $chunks = array_chunk($urls, $max_concurrent_requests);
+        foreach ($chunks as $chunk) {
+            $this->process_preload_urls_with_curl_multi($chunk);
         }
-        
-        // Log tổng kết
-        $total_time = microtime(true) - $start_batch;
-        $this->log_message(sprintf(
-            "Hoàn thành preload %d URLs trong %.1f giây (%.1f URLs/s)", 
-            count($urls),
-            $total_time,
-            count($urls) / $total_time
-        ));
-        
     } catch (Exception $e) {
         $this->log_message("Lỗi preload cache: " . $e->getMessage());
         as_enqueue_async_action(self::ACTION_PRELOAD_URLS, ['urls' => $urls], 'cloudflare-cache');
