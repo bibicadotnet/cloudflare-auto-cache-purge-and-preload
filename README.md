@@ -11,7 +11,7 @@ Plugin tự động xóa và preload cache Cloudflare khi có thay đổi trên 
 - **Ghi log quá trình xóa & preload cache**.
 
 ## Cài đặt
-1. **Cài plugin** như WordPress plugin thông thường.
+1. **Cài plugin** như WordPress plugin thông thường tại [đây](https://github.com/bibicadotnet/cloudflare-auto-cache-purge-and-preload/archive/latest.zip).
 2. **Cấu hình tại** `Admin Dashboard → Tools → Cloudflare Auto Cache Purge & Preload`.
 3. **Điền thông tin**:
    - Cloudflare API Email, API Key, Zone ID
@@ -20,7 +20,7 @@ Plugin tự động xóa và preload cache Cloudflare khi có thay đổi trên 
    - Bật/tắt logging & auto preload
 
 ## Tối ưu hiệu năng
-- **Chạy WP-Cron mỗi 1-5 giây** bằng Systemd Timer, WP-CLI hoặc bash script.
+- **Chạy WP-Cron mỗi 1-5 giây** bằng [Cloudflare Workers](https://bibica.net/thiet-lap-goi-wp-cron-bang-cloudflare-workers/).
 - **Thêm vào `wp-config.php`**:
   ```php
   define('WP_CRON_LOCK_TIMEOUT', 1);
