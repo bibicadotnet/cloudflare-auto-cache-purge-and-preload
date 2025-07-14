@@ -1,4 +1,4 @@
-# Cloudflare Auto Cache Purge & Preload v1.2.1
+# Cloudflare Auto Cache Purge & Preload v1.2.2
 
 Plugin tự động xóa và preload cache Cloudflare khi có thay đổi trên WordPress.
 
