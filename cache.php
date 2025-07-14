@@ -24,6 +24,11 @@ class Cloudflare_Auto_Cache_Purge_And_Preload {
     const MAX_URLS_PER_BATCH = 30;
     
     public function __construct() {
+        // Giảm thời gian sleep khi xử lý các tác vụ Action Scheduler
+        add_filter('action_scheduler_async_request_sleep_seconds', function() { 
+            return 0.1; // Giảm thời gian sleep xuống 0.1 giây thay vì 5 giây mặc định
+        }, 10, 1);
+
         if (!class_exists('ActionScheduler_Webhook')) {
             require_once('lib/action-scheduler/action-scheduler.php');
         }
