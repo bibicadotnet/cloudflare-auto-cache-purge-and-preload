@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Cloudflare Auto Cache Purge And Preload
  * Description: Tự động xóa và preload cache cho bài viết, trang, danh mục và thẻ sử dụng Cloudflare API và Action Scheduler.
- * Version: 1.2.1
+ * Version: 1.2.2
  * Author: bibica
  * Author URI: https://bibica.net
  * Plugin URI: https://bibica.net/cloudflare-auto-cache-purge-and-preload
